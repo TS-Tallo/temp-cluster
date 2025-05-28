@@ -1,5 +1,5 @@
 # Basics
-sudo apt-get install vim git htop build-essential pciutils curl wget gcc
+sudo apt-get install vim git htop build-essential pciutils curl wget gcc -y
 
 # Setup Mellanox
 wget -qO - http://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | sudo gpg --dearmor -o /usr/share/keyrings/GPG-KEY-Mellanox.gpg
