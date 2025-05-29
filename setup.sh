@@ -2,8 +2,8 @@
 sudo apt-get install vim git htop build-essential pciutils curl wget gcc ca-certificates -y
 
 # Setup Mellanox
-wget -qO - http://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | sudo gpg --dearmor -o /usr/share/keyrings/GPG-KEY-Mellanox.gpg
-echo "deb [signed-by=/usr/share/keyrings/GPG-KEY-Mellanox.gpg] https://linux.mellanox.com/public/repo/mInx_ofed/latest/ubuntu22.04/x86_64 /" | sudo tee /etc/apt/sources.list.d/mlnx.list > /dev/null
+wget -qO - https://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | sudo gpg --dearmor -o /usr/share/keyrings/GPG-KEY-Mellanox.gpg
+echo "deb [signed-by=/usr/share/keyrings/GPG-KEY-Mellanox.gpg] https://linux.mellanox.com/public/repo/mlnx_ofed/latest/ubuntu22.04/x86_64 /" | sudo tee /etc/apt/sources.list.d/mlnx.list > /dev/null
 sudo apt-get install mlnx-fw-updater mlnx-ofed-all -y
 
 # Nvidia Toolkit
