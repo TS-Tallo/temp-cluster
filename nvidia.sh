@@ -3,4 +3,3 @@ sudo apt install pkg-config libglvnd-dev dkms build-essential libegl-dev libegl1
 sudo add-apt-repository ppa:graphics-drivers/ppa
 sudo apt update 
 sudo apt install nvidia-driver-570
-sudo reboot
