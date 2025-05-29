@@ -11,7 +11,7 @@ echo "Starting comprehensive system setup and installation"
 
 # Install basic utilities and dependencies
 echo "Installing basic utilities"
-sudo apt-get update
+sudo apt-get update && sudo apt-get upgrade -y
 sudo apt-get install -y vim git htop build-essential pciutils curl wget gcc ca-certificates \
     gnupg2 software-properties-common
 
