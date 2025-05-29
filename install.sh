@@ -13,21 +13,6 @@ echo "Starting installation of OFED, CUDA, NCCL, and UCX packages"
 apt-get update
 apt-get install -y wget gnupg2 software-properties-common build-essential
 
-# Install OFED (Mellanox OFED) >= 5.9
-echo "Installing OFED >= 5.9"
-OFED_VERSION="5.9-0.5.9.0"
-OFED_OS="ubuntu20.04"
-OFED_ARCH="x86_64"
-OFED_PACKAGE="MLNX_OFED_LINUX-${OFED_VERSION}-${OFED_OS}-${OFED_ARCH}"
-OFED_URL="https://content.mellanox.com/ofed/${OFED_PACKAGE}/${OFED_PACKAGE}.tgz"
-
-cd /tmp
-wget ${OFED_URL}
-tar -xzf ${OFED_PACKAGE}.tgz
-cd ${OFED_PACKAGE}
-./mlnxofedinstall --auto-add-kernel-support --force
-/etc/init.d/openibd restart
-
 # Install CUDA 12.4.1
 echo "Installing CUDA 12.4.1"
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
