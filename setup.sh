@@ -1,5 +1,5 @@
 # Basics
-sudo apt-get install vim git htop build-essential pciutils curl wget gcc -y
+sudo apt-get install vim git htop build-essential pciutils curl wget gcc ca-certificates -y
 
 # Setup Mellanox
 wget -qO - http://www.mellanox.com/downloads/ofed/RPM-GPG-KEY-Mellanox | sudo gpg --dearmor -o /usr/share/keyrings/GPG-KEY-Mellanox.gpg
@@ -17,7 +17,6 @@ sudo apt-get install libnvidia-compute-560:i386 libnvidia-decode-560:i386 \
 
 # Add Docker's official GPG key:
 sudo apt-get update
-sudo apt-get install ca-certificates curl
 sudo install -m 0755 -d /etc/apt/keyrings
 sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
 sudo chmod a+r /etc/apt/keyrings/docker.asc
