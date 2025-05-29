@@ -22,6 +22,13 @@ echo "deb [signed-by=/usr/share/keyrings/GPG-KEY-Mellanox.gpg] https://linux.mel
 sudo apt-get update
 sudo apt-get install -y mlnx-fw-updater mlnx-ofed-all
 
+
+# Add Keyring
+echo "Setting up CUDA Keyring"
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt-get update
+
 # Check if NVIDIA drivers are already installed
 if ! command -v nvidia-smi &> /dev/null; then
     echo "NVIDIA drivers not found, installing..."
@@ -36,9 +43,6 @@ fi
 
 # Install CUDA 12.4.1
 echo "Installing CUDA 12.4.1"
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-sudo dpkg -i cuda-keyring_1.1-1_all.deb
-sudo apt-get update
 sudo apt-get install -y cuda-12-4=12.4.1-1 nvidia-container-toolkit
 
 # Set CUDA environment variables
