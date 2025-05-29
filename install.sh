@@ -15,7 +15,7 @@ apt-get install -y wget gnupg2 software-properties-common build-essential
 
 # Install CUDA 12.4.1
 echo "Installing CUDA 12.4.1"
-wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2004/x86_64/cuda-keyring_1.0-1_all.deb
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb
 dpkg -i cuda-keyring_1.0-1_all.deb
 apt-get update
 apt-get install -y cuda-12-4=12.4.1-1
