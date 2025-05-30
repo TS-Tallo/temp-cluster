@@ -1,3 +1,38 @@
+# VLLM
+### **On Node 1 (Master, node-rank=0):**
+``` bash
+docker run --gpus all --network host --rm \
+  -e NCCL_SOCKET_IFNAME=enp129s0f0np0,enp129s0f1np1 \
+  -v /models:/data \
+  vllm/vllm-openai:v0.3.3 \
+  python3 -m vllm.entrypoints.openai.api_server \
+    --model google/gemma-7b \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --distributed \
+    --tensor-parallel-size 2 \
+    --node-rank 0 \
+    --master-addr 192.168.100.1 \
+    --master-port 9000
+```
+### **On Node 2 (Worker, node-rank=1):**
+``` bash
+docker run --gpus all --network host --rm \
+  -e NCCL_SOCKET_IFNAME=enp129s0f0np0,enp129s0f1np1 \
+  -v /models:/data \
+  vllm/vllm-openai:v0.3.3 \
+  python3 -m vllm.entrypoints.openai.api_server \
+    --model google/gemma-7b \
+    --host 0.0.0.0 \
+    --port 8000 \
+    --distributed \
+    --tensor-parallel-size 2 \
+    --node-rank 1 \
+    --master-addr 192.168.100.1 \
+    --master-port 9000
+```
+
+# HF-TGI
 ### **Master Node (Node 1)**
 ``` bash
 docker run --gpus all --network host --rm \
@@ -26,3 +61,7 @@ docker run --gpus all --network host --rm \
   --hostname 192.168.100.2 \
   --distributed-init-method "tcp://192.168.100.1:9000"
 ```
+
+
+
+
