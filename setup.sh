@@ -22,7 +22,6 @@ echo "deb [signed-by=/usr/share/keyrings/GPG-KEY-Mellanox.gpg] https://linux.mel
 sudo apt-get update
 sudo apt-get install -y mlnx-fw-updater mlnx-ofed-all
 
-
 # Add Keyring
 echo "Setting up CUDA Keyring"
 wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
