@@ -3,7 +3,7 @@ import ray
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-@ray.remote
+@ray.remote(num_gpus=1)
 class InferenceWorker:
     """Ray Actor for distributed inference on HuggingFace CausalLM models."""
 
@@ -112,7 +112,7 @@ def main():
     """Main entry - sets up Ray and processes distributed prompts."""
     try:
         # Initialize Ray with sensible defaults
-        ray.init(ignore_reinit_error=True, runtime_env={"pip": ["transformers", "torch"]})
+        ray.init(ignore_reinit_error=True)
 
         # Get HuggingFace token from environment
         hf_token = os.environ.get("HF_TOKEN")
@@ -136,21 +136,28 @@ def main():
         if n_gpus == 0:
             print("Warning: No GPUs detected. Running on CPU only.")
         
-        # For large models like gemma-3-27b, use more GPUs per worker if available
-        gpus_per_worker = 4 if "27b" in model_name and n_gpus >= 4 else max(1, min(2, n_gpus))
+        # For large models like gemma-3-27b, determine optimal GPU allocation
+        gpus_per_worker = min(n_gpus, 4 if "27b" in model_name else 1)
         
-        # Calculate optimal number of workers based on available GPUs
-        num_workers = max(1, n_gpus // gpus_per_worker)
+        # Create the right number of workers based on available GPUs
+        num_workers = max(1, n_gpus // gpus_per_worker) if n_gpus > 0 else 1
         
         print(f"Creating {num_workers} inference workers with {gpus_per_worker} GPUs per worker...")
         
-        # Configure GPU resources for each worker
-        InferenceWorkerWithGPUs = ray.remote(num_gpus=gpus_per_worker)(InferenceWorker)
-        
-        workers = [
-            InferenceWorkerWithGPUs.remote(model_name, hf_token, gpus_per_worker)
-            for _ in range(num_workers)
-        ]
+        # Create workers with the appropriate GPU configuration
+        if gpus_per_worker > 1:
+            # For multi-GPU models, create custom remote class with correct GPU count
+            CustomInferenceWorker = ray.remote(num_gpus=gpus_per_worker)(InferenceWorker._actor_for_actor_class)
+            workers = [
+                CustomInferenceWorker.remote(model_name, hf_token, gpus_per_worker)
+                for _ in range(num_workers)
+            ]
+        else:
+            # For single GPU models, use the base decorator
+            workers = [
+                InferenceWorker.remote(model_name, hf_token, gpus_per_worker)
+                for _ in range(num_workers)
+            ]
 
         # Dispatch prompts to workers cyclically
         print(f"Processing {len(prompts)} prompts...")
