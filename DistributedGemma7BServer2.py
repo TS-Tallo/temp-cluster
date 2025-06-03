@@ -15,7 +15,8 @@ class InferenceWorker:
         )
 
     def infer(self, prompt):
-        inputs = self.tokenizer(prompt, return_tensors="pt").to(self.model.device)
+        inputs = self.tokenizer(prompt, return_tensors="pt")
+        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model.generate(**inputs, max_new_tokens=20)
         result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
