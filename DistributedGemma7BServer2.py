@@ -7,25 +7,33 @@ from transformers import AutoTokenizer, AutoModelForCausalLM
 class InferenceWorker:
     def __init__(self, model_name, hf_token):
         self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_auth_token=hf_token)
+        device_map = "auto" if torch.cuda.device_count() > 1 else None
+        dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            device_map="auto" if torch.cuda.device_count() > 1 else None,
+            torch_dtype=dtype,
+            device_map=device_map,
             use_auth_token=hf_token
         )
+        # Always get device for later use
+        self.device = next(self.model.parameters()).device
 
     def infer(self, prompt):
         inputs = self.tokenizer(prompt, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model.generate(**inputs, max_new_tokens=20)
-        result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        # To avoid .cpu() errors: decode handles CUDA tensors automatically, but safely move if needed
+        result = self.tokenizer.decode(outputs[0].cpu() if outputs[0].is_cuda else outputs[0], skip_special_tokens=True)
         return result
 
 if __name__ == "__main__":
     ray.init()
 
     HF_TOKEN = os.environ.get("HF_TOKEN")
+    if HF_TOKEN is None:
+        raise ValueError("Please set the HF_TOKEN environment variable for HuggingFace model access.")
+
     MODEL_NAME = "google/gemma-7b"
 
     prompts = [

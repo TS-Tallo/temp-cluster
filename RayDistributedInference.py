@@ -9,23 +9,25 @@ class InferenceWorker:
 
     def __init__(self, model_name: str, hf_token: str):
         """Initialize model and tokenizer."""
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name, use_auth_token=hf_token)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
         device_map = "auto" if torch.cuda.device_count() > 1 else None
         dtype = torch.float16 if torch.cuda.is_available() else torch.float32
         self.model = AutoModelForCausalLM.from_pretrained(
             model_name,
             torch_dtype=dtype,
             device_map=device_map,
-            use_auth_token=hf_token
+            token=hf_token
         )
 
     def infer(self, prompt: str) -> str:
         """Generate a response from the model."""
         inputs = self.tokenizer(prompt, return_tensors="pt")
-        inputs = {k: v.to(self.model.device) for k, v in inputs.items()}
+        device = next(self.model.parameters()).device
+        inputs = {k: v.to(device) for k, v in inputs.items()}
         with torch.no_grad():
             outputs = self.model.generate(**inputs, max_new_tokens=20)
-        return self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        result = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
+        return result
 
 def main():
     """Main entry - sets up Ray and crawls distributed prompts."""
