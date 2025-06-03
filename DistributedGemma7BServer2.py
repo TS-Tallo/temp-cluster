@@ -3,6 +3,7 @@ import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
 import threading
 import sys
+import os
 
 @ray.remote(num_gpus=1)
 class DistributedGemma7BServer:
@@ -53,11 +54,22 @@ def main():
     print("=== Starting DistributedGemma7BServer Actor ===")
     server = DistributedGemma7BServer.remote()
 
-    prompt = "What is the capital of Italy?"
+    # Updated: Use a clear Q&A prompt that steers model toward direct answer
+    prompt = "Q: What is the capital of Italy?\nA:"
     print(f"=== Sending prompt to actor: '{prompt}' ===")
 
     result = ray.get(server.generate.remote(prompt))
-    print(f"=== Model Output ===\n{result}")
+
+    # Post-process: Try to extract direct answer after 'A:'
+    answer = ""
+    if "A:" in result:
+        answer = result.split("A:")[1].strip().split("\n")[0]
+    else:
+        # Fallback: just grab the first non-empty line
+        lines = [line.strip() for line in result.strip().split("\n") if line.strip()]
+        answer = lines[0] if lines else result.strip()
+
+    print(f"=== Model Output ===\n{answer}")
 
 if __name__ == "__main__":
     main()
