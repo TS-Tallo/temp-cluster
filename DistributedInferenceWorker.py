@@ -3,6 +3,7 @@ import ray
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
+# Keep the original InferenceWorker class for local model loading
 class InferenceWorker:
     """Base class for distributed inference on HuggingFace CausalLM models."""
 
@@ -104,12 +105,63 @@ class InferenceWorker:
                 # For non-instruction models, just return the newly generated tokens
                 result = full_output[len(formatted_prompt):]
                 
-            return result.strip()
+            # Ensure we return a primitive string type
+            return str(result.strip())
         except Exception as e:
+            print(f"Error details in infer method: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return f"Error during inference: {str(e)}"
 
+
+# Ray-compatible distributed worker implementation
+class DistributedInferenceWorker:
+    """Ray-compatible wrapper for distributed inference."""
+    
+    def __init__(self, model_name: str, hf_token: str, gpus_per_worker: int = 1):
+        """Initialize a local InferenceWorker instance."""
+        self.model_name = model_name
+        self.hf_token = hf_token
+        self.gpus_per_worker = gpus_per_worker
+        # We'll initialize the worker separately to avoid serialization issues
+        self.worker = None
+    
+    def initialize(self):
+        """Initialize the worker separately to avoid serialization issues."""
+        if self.worker is None:
+            try:
+                self.worker = InferenceWorker(
+                    self.model_name, 
+                    self.hf_token, 
+                    self.gpus_per_worker
+                )
+                return True
+            except Exception as e:
+                print(f"Failed to initialize worker: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return False
+        return True
+    
+    def infer(self, prompt: str, max_new_tokens: int = 100, temperature: float = 0.7) -> str:
+        """Pass the inference request to the local worker and ensure primitive return type."""
+        # Initialize the worker if not already done
+        if not self.initialize():
+            return "Error: Failed to initialize inference worker"
+        
+        try:
+            result = self.worker.infer(prompt, max_new_tokens, temperature)
+            # Ensure we're returning a primitive string type that Ray can easily serialize
+            return str(result)
+        except Exception as e:
+            print(f"Error in DistributedInferenceWorker.infer: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return f"Error during distributed inference: {str(e)}"
+
+
 def main():
-    """Main entry - sets up Ray and processes distributed prompts."""
+    """Main entry point - sets up Ray and processes distributed prompts."""
     try:
         # Initialize Ray with sensible defaults
         ray.init(ignore_reinit_error=True)
@@ -144,15 +196,21 @@ def main():
         
         print(f"Creating {num_workers} inference workers with {gpus_per_worker} GPUs per worker...")
         
-        # Create the proper Ray actor class with the right GPU count
-        RemoteInferenceWorker = ray.remote(num_gpus=gpus_per_worker)(InferenceWorker)
+        # Create a Ray actor class with the proper GPU allocation
+        RemoteWorker = ray.remote(num_gpus=gpus_per_worker)(DistributedInferenceWorker)
         
+        # Create distributed workers
         workers = [
-            RemoteInferenceWorker.remote(model_name, hf_token, gpus_per_worker)
+            RemoteWorker.remote(model_name, hf_token, gpus_per_worker)
             for _ in range(num_workers)
         ]
-
-        # Dispatch prompts to workers cyclically
+        
+        # Initialize workers first and wait for completion
+        init_results = ray.get([worker.initialize.remote() for worker in workers])
+        if not all(init_results):
+            print("Warning: Some workers failed to initialize")
+        
+        # Process prompts
         print(f"Processing {len(prompts)} prompts...")
         prompt_tasks = [
             workers[i % num_workers].infer.remote(prompts[i], max_new_tokens=250, temperature=0.7)
@@ -166,9 +224,12 @@ def main():
             
     except Exception as e:
         print(f"Error in main: {str(e)}")
+        import traceback
+        traceback.print_exc()
     finally:
         # Shutdown Ray
         ray.shutdown()
+
 
 if __name__ == "__main__":
     main()
