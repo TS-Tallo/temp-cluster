@@ -44,6 +44,15 @@ class DistributedGemma7BServer:
         thread.join()
         return generated_text
 
+def extract_answer(result):
+    answer = ""
+    if "A:" in result:
+        answer = result.split("A:")[1].strip().split("\n")[0]
+    else:
+        lines = [line.strip() for line in result.strip().split("\n") if line.strip()]
+        answer = lines[0] if lines else result.strip()
+    return answer
+
 def main():
     print("=== Ray Initialization ===")
     if not ray.is_initialized():
@@ -54,22 +63,22 @@ def main():
     print("=== Starting DistributedGemma7BServer Actor ===")
     server = DistributedGemma7BServer.remote()
 
-    # Updated: Use a clear Q&A prompt that steers model toward direct answer
-    prompt = "Q: What is the capital of Italy?\nA:"
-    print(f"=== Sending prompt to actor: '{prompt}' ===")
+    # Multiple prompts for test
+    prompts = [
+        "Q: What is the capital of Italy?\nA:",
+        "Q: Who wrote '1984'?\nA:",
+        "Q: What is the largest planet in our solar system?\nA:",
+        "Q: What year did the Apollo 11 moon landing occur?\nA:"
+    ]
 
-    result = ray.get(server.generate.remote(prompt))
+    # Gather all results asynchronously
+    result_refs = [server.generate.remote(prompt) for prompt in prompts]
+    results = ray.get(result_refs)
 
-    # Post-process: Try to extract direct answer after 'A:'
-    answer = ""
-    if "A:" in result:
-        answer = result.split("A:")[1].strip().split("\n")[0]
-    else:
-        # Fallback: just grab the first non-empty line
-        lines = [line.strip() for line in result.strip().split("\n") if line.strip()]
-        answer = lines[0] if lines else result.strip()
-
-    print(f"=== Model Output ===\n{answer}")
+    print("=== Model Outputs ===")
+    for prompt, result in zip(prompts, results):
+        answer = extract_answer(result)
+        print(f"{prompt}\n{answer}\n")
 
 if __name__ == "__main__":
     main()
