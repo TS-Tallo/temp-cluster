@@ -2,6 +2,11 @@ import os
 import ray
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
+import logging
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("DistributedInference")
 
 # Keep the original InferenceWorker class for local model loading
 class InferenceWorker:
@@ -11,7 +16,18 @@ class InferenceWorker:
         """Initialize model and tokenizer for large models with model parallelism."""
         try:
             self.model_name = model_name
-            self.tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+            
+            # Special handling for Gemma-3 models
+            if "gemma-3" in model_name.lower():
+                logger.info(f"Using special configuration for Gemma-3 model: {model_name}")
+                self.tokenizer = AutoTokenizer.from_pretrained(
+                    model_name, 
+                    token=hf_token,
+                    trust_remote_code=True,  # Added for Gemma-3
+                )
+            else:
+                self.tokenizer = AutoTokenizer.from_pretrained(model_name, token=hf_token)
+                
             self.is_instruction_model = "-it" in model_name or "instruct" in model_name.lower()
             
             n_gpus = torch.cuda.device_count()
@@ -33,19 +49,38 @@ class InferenceWorker:
             else:
                 dtype = torch.float16 if torch.cuda.is_available() else torch.float32
 
-            print(f"Loading {model_name} with dtype={dtype}, device_map={device_map}")
-            self.model = AutoModelForCausalLM.from_pretrained(
-                model_name,
-                torch_dtype=dtype,
-                device_map=device_map,
-                max_memory=max_memory,
-                token=hf_token,
-                trust_remote_code=True,
-                low_cpu_mem_usage=True,  # Helps with large models
-            )
-            print(f"Model {model_name} loaded successfully")
+            logger.info(f"Loading {model_name} with dtype={dtype}, device_map={device_map}")
+            
+            # Special handling for Gemma-3 models
+            if "gemma-3" in model_name.lower():
+                # Set specific configuration options for Gemma-3
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=dtype,
+                    device_map=device_map,
+                    max_memory=max_memory,
+                    token=hf_token,
+                    trust_remote_code=True,
+                    revision="main",  # Use main branch
+                    low_cpu_mem_usage=True,
+                    attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager",
+                )
+            else:
+                self.model = AutoModelForCausalLM.from_pretrained(
+                    model_name,
+                    torch_dtype=dtype,
+                    device_map=device_map,
+                    max_memory=max_memory,
+                    token=hf_token,
+                    trust_remote_code=True,
+                    low_cpu_mem_usage=True,
+                )
+                
+            logger.info(f"Model {model_name} loaded successfully")
         except Exception as e:
-            print(f"Failed to initialize model: {str(e)}")
+            logger.error(f"Failed to initialize model: {str(e)}")
+            import traceback
+            traceback.print_exc()
             raise
 
     def format_prompt(self, prompt: str) -> str:
@@ -63,23 +98,37 @@ class InferenceWorker:
         """Generate a response from the model."""
         try:
             formatted_prompt = self.format_prompt(prompt)
+            logger.debug(f"Formatted prompt: {formatted_prompt}")
+            
             inputs = self.tokenizer(formatted_prompt, return_tensors="pt")
             
             # Get the device of the first parameter of the model
             device = next(self.model.parameters()).device
+            logger.debug(f"Model is on device: {device}")
             
             # Move inputs to the same device as the model
             inputs = {k: v.to(device) for k, v in inputs.items()}
             
+            # Configure generation parameters
+            generation_config = {
+                "max_new_tokens": max_new_tokens,
+                "do_sample": True,
+                "temperature": temperature,
+                "top_p": 0.95,
+                "repetition_penalty": 1.1,
+            }
+            
+            # Special handling for Gemma-3 models
+            if "gemma-3" in self.model_name.lower():
+                generation_config.update({
+                    "pad_token_id": self.tokenizer.pad_token_id,
+                    "eos_token_id": self.tokenizer.eos_token_id,
+                })
+                
+            logger.debug(f"Generation config: {generation_config}")
+            
             with torch.no_grad():
-                outputs = self.model.generate(
-                    **inputs, 
-                    max_new_tokens=max_new_tokens,
-                    do_sample=True,
-                    temperature=temperature,
-                    top_p=0.95,
-                    repetition_penalty=1.1,
-                )
+                outputs = self.model.generate(**inputs, **generation_config)
             
             # Decode the full response and extract only the model's reply
             full_output = self.tokenizer.decode(outputs[0], skip_special_tokens=True)
@@ -108,63 +157,98 @@ class InferenceWorker:
             # Ensure we return a primitive string type
             return str(result.strip())
         except Exception as e:
-            print(f"Error details in infer method: {str(e)}")
+            logger.error(f"Error details in infer method: {str(e)}")
             import traceback
             traceback.print_exc()
             return f"Error during inference: {str(e)}"
 
 
 # Ray-compatible distributed worker implementation
+@ray.remote
 class DistributedInferenceWorker:
     """Ray-compatible wrapper for distributed inference."""
     
     def __init__(self, model_name: str, hf_token: str, gpus_per_worker: int = 1):
-        """Initialize a local InferenceWorker instance."""
+        """Store initialization parameters only."""
         self.model_name = model_name
         self.hf_token = hf_token
         self.gpus_per_worker = gpus_per_worker
-        # We'll initialize the worker separately to avoid serialization issues
         self.worker = None
+        logger.info(f"DistributedInferenceWorker created for model {model_name}")
     
     def initialize(self):
         """Initialize the worker separately to avoid serialization issues."""
         if self.worker is None:
             try:
+                logger.info("Initializing inference worker...")
                 self.worker = InferenceWorker(
                     self.model_name, 
                     self.hf_token, 
                     self.gpus_per_worker
                 )
-                return True
+                logger.info("Worker initialized successfully")
+                return {"status": "success", "message": "Worker initialized successfully"}
             except Exception as e:
-                print(f"Failed to initialize worker: {str(e)}")
+                error_msg = f"Failed to initialize worker: {str(e)}"
+                logger.error(error_msg)
                 import traceback
                 traceback.print_exc()
-                return False
-        return True
+                return {"status": "error", "message": error_msg}
+        return {"status": "success", "message": "Worker already initialized"}
     
     def infer(self, prompt: str, max_new_tokens: int = 100, temperature: float = 0.7) -> str:
         """Pass the inference request to the local worker and ensure primitive return type."""
         # Initialize the worker if not already done
-        if not self.initialize():
-            return "Error: Failed to initialize inference worker"
+        if self.worker is None:
+            init_result = self.initialize()
+            if init_result["status"] == "error":
+                return f"Error: {init_result['message']}"
         
         try:
+            logger.info(f"Running inference with prompt: {prompt[:50]}...")
             result = self.worker.infer(prompt, max_new_tokens, temperature)
+            logger.info("Inference completed successfully")
             # Ensure we're returning a primitive string type that Ray can easily serialize
             return str(result)
         except Exception as e:
-            print(f"Error in DistributedInferenceWorker.infer: {str(e)}")
+            error_msg = f"Error in DistributedInferenceWorker.infer: {str(e)}"
+            logger.error(error_msg)
             import traceback
             traceback.print_exc()
             return f"Error during distributed inference: {str(e)}"
+
+
+def create_workers(model_name: str, hf_token: str, num_workers: int, gpus_per_worker: int):
+    """Create and initialize distributed workers."""
+    logger.info(f"Creating {num_workers} workers with {gpus_per_worker} GPUs per worker")
+    
+    # Create the workers
+    workers = []
+    for i in range(num_workers):
+        worker = DistributedInferenceWorker.options(num_gpus=gpus_per_worker).remote(
+            model_name, hf_token, gpus_per_worker
+        )
+        workers.append(worker)
+        logger.info(f"Created worker {i+1}/{num_workers}")
+    
+    # Initialize the workers in parallel
+    logger.info("Initializing workers...")
+    init_results = ray.get([worker.initialize.remote() for worker in workers])
+    
+    # Check for initialization errors
+    for i, result in enumerate(init_results):
+        if result["status"] == "error":
+            logger.warning(f"Worker {i+1} initialization failed: {result['message']}")
+    
+    return workers
 
 
 def main():
     """Main entry point - sets up Ray and processes distributed prompts."""
     try:
         # Initialize Ray with sensible defaults
-        ray.init(ignore_reinit_error=True)
+        ray.init(ignore_reinit_error=True, logging_level=logging.WARNING)
+        logger.info("Ray initialized")
 
         # Get HuggingFace token from environment
         hf_token = os.environ.get("HF_TOKEN")
@@ -183,10 +267,10 @@ def main():
         ]
         
         n_gpus = torch.cuda.device_count()
-        print(f"Available GPUs: {n_gpus}")
+        logger.info(f"Available GPUs: {n_gpus}")
         
         if n_gpus == 0:
-            print("Warning: No GPUs detected. Running on CPU only.")
+            logger.warning("No GPUs detected. Running on CPU only.")
         
         # For large models like gemma-3-27b, determine optimal GPU allocation
         gpus_per_worker = min(n_gpus, 4 if "27b" in model_name else 1)
@@ -194,41 +278,44 @@ def main():
         # Create the right number of workers based on available GPUs
         num_workers = max(1, n_gpus // gpus_per_worker) if n_gpus > 0 else 1
         
-        print(f"Creating {num_workers} inference workers with {gpus_per_worker} GPUs per worker...")
-        
-        # Create a Ray actor class with the proper GPU allocation
-        RemoteWorker = ray.remote(num_gpus=gpus_per_worker)(DistributedInferenceWorker)
-        
-        # Create distributed workers
-        workers = [
-            RemoteWorker.remote(model_name, hf_token, gpus_per_worker)
-            for _ in range(num_workers)
-        ]
-        
-        # Initialize workers first and wait for completion
-        init_results = ray.get([worker.initialize.remote() for worker in workers])
-        if not all(init_results):
-            print("Warning: Some workers failed to initialize")
+        # Create and initialize workers
+        workers = create_workers(model_name, hf_token, num_workers, gpus_per_worker)
         
         # Process prompts
-        print(f"Processing {len(prompts)} prompts...")
-        prompt_tasks = [
-            workers[i % num_workers].infer.remote(prompts[i], max_new_tokens=250, temperature=0.7)
-            for i in range(len(prompts))
-        ]
+        logger.info(f"Processing {len(prompts)} prompts...")
+        prompt_tasks = []
         
-        # Process results as they become available
-        for i, response in enumerate(ray.get(prompt_tasks)):
-            print(f"\nPrompt {i+1}: {prompts[i]}")
+        for i, prompt in enumerate(prompts):
+            worker_idx = i % len(workers)
+            task = workers[worker_idx].infer.remote(prompt, 250, 0.7)
+            prompt_tasks.append((i, prompt, task))
+        
+        # Process results
+        results = []
+        for i, prompt, task in prompt_tasks:
+            try:
+                response = ray.get(task)
+                results.append((i, prompt, response))
+                logger.info(f"Processed prompt {i+1}/{len(prompts)}")
+            except Exception as e:
+                error_msg = f"Error processing prompt {i+1}: {str(e)}"
+                logger.error(error_msg)
+                results.append((i, prompt, f"Error: {str(e)}"))
+        
+        # Sort results by original index and display
+        results.sort(key=lambda x: x[0])
+        for i, prompt, response in results:
+            print(f"\nPrompt {i+1}: {prompt}")
             print(f"Response: {response}")
             
     except Exception as e:
-        print(f"Error in main: {str(e)}")
+        logger.error(f"Error in main: {str(e)}")
         import traceback
         traceback.print_exc()
     finally:
         # Shutdown Ray
         ray.shutdown()
+        logger.info("Ray shutdown complete")
 
 
 if __name__ == "__main__":
