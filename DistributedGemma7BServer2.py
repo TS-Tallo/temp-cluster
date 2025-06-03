@@ -1,82 +1,66 @@
 import ray
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer, TextIteratorStreamer
-import threading
-import sys
 import os
+from ray.train.torch import TorchTrainer
+from ray.air.config import ScalingConfig
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
-@ray.remote(num_gpus=1)
-class DistributedGemma7BServer:
-    def __init__(self, model_name="google/gemma-7b"):
-        print("=== Ray Actor Initialization ===")
-        print(f"[Actor] torch.cuda.is_available(): {torch.cuda.is_available()}")
-        print(f"[Actor] torch.cuda.device_count(): {torch.cuda.device_count()}")
-        if torch.cuda.is_available():
-            device = torch.device("cuda:0")
-            print(f"[Actor] Using device: {device}")
-        else:
-            device = torch.device("cpu")
-            print("[Actor] WARNING: No GPU detected, using CPU.")
-        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        ).to(device)
-        print(f"[Actor] Model loaded on {device}.")
+# Ensure your HF_TOKEN is set — recommend export HF_TOKEN=xxx in shell
+HF_TOKEN = os.environ.get("HF_TOKEN", None)
 
-    def generate(self, prompt, max_new_tokens=32):
-        device = self.model.device
-        print(f"[Actor] Model inference on device: {device}")
-        streamer = TextIteratorStreamer(self.tokenizer, skip_prompt=True, skip_special_tokens=True)
-        input_ids = self.tokenizer(prompt, return_tensors="pt").input_ids.to(device)
-        gen_kwargs = dict(
-            input_ids=input_ids,
-            max_new_tokens=max_new_tokens,
-            streamer=streamer
-        )
+def inference_loop_per_worker(config):
+    import os
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        thread = threading.Thread(target=self.model.generate, kwargs=gen_kwargs)
-        thread.start()
+    # Get the Hugging Face token from environment for every worker
+    hf_token = os.environ.get("HF_TOKEN")
+    if hf_token is None:
+        raise ValueError("HF_TOKEN environment variable not set on worker!")
 
-        generated_text = ""
-        for chunk in streamer:
-            generated_text += chunk
-        thread.join()
-        return generated_text
+    # Change as needed for your model
+    model_name = config["model_name"]
 
-def extract_answer(result):
-    answer = ""
-    if "A:" in result:
-        answer = result.split("A:")[1].strip().split("\n")[0]
-    else:
-        lines = [line.strip() for line in result.strip().split("\n") if line.strip()]
-        answer = lines[0] if lines else result.strip()
-    return answer
+    print("Initializing model on worker...")
+    # tokenizer and model will be loaded using the HF_TOKEN
+    tokenizer = AutoTokenizer.from_pretrained(model_name, use_auth_token=hf_token)
+    model = AutoModelForCausalLM.from_pretrained(
+        model_name,
+        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
+        device_map="auto" if torch.cuda.device_count() > 1 else None,
+        use_auth_token=hf_token
+    )
 
-def main():
-    print("=== Ray Initialization ===")
-    if not ray.is_initialized():
-        ray.init()
-    print(f"[Main] torch.cuda.device_count(): {torch.cuda.device_count()}")
-    print(f"[Main] torch.cuda.is_available(): {torch.cuda.is_available()}")
-
-    print("=== Starting DistributedGemma7BServer Actor ===")
-    server = DistributedGemma7BServer.remote()
-
-    prompts = [
-        "Q: What is the capital of Italy?\nA:",
-        "Q: Who wrote 'Pride and Prejudice'?\nA:",
-        "Q: What is the largest planet in our solar system?\nA:",
-        "Q: What year did the Apollo 11 moon landing occur?\nA:"
-    ]
-
-    for loop in range(1, 11):
-        print(f"\n=== Iteration {loop} ===")
-        result_refs = [server.generate.remote(prompt) for prompt in prompts]
-        results = ray.get(result_refs)
-        for prompt, result in zip(prompts, results):
-            answer = extract_answer(result)
-            print(f"{prompt}\n{answer}\n")
+    print(f"Worker device count: {torch.cuda.device_count()}")
+    prompt = config.get("prompt", "Hello, world!")
+    inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+    with torch.no_grad():
+        outputs = model.generate(**inputs, max_new_tokens=20)
+    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    print("Sample output:", result)
+    return {"output": result}
 
 if __name__ == "__main__":
-    main()
+    # Ensure Ray is initialized. This will use Ray cluster if available.
+    ray.init()
+
+    # Pass config for your run
+    config = {
+        "model_name": "google/gemma-7b",
+        "prompt": "Which language models support distributed inference?"
+    }
+
+    # ScalingConfig to define cluster usage (e.g., 2 workers, 1 GPU each)
+    scaling_config = ScalingConfig(num_workers=2, use_gpu=True)
+
+    # Pass the env var with the token to workers (if not globally exported)
+    # You can also do os.environ['HF_TOKEN'] = ... here
+    trainer = TorchTrainer(
+        train_loop_per_worker=inference_loop_per_worker,
+        train_loop_config=config,
+        scaling_config=scaling_config,
+        run_config=ray.air.RunConfig(env={"HF_TOKEN": HF_TOKEN})
+    )
+
+    # Run distributed inference/train — returns results from all workers
+    results = trainer.fit()
+    print("All worker results:", results)
