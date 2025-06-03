@@ -1,6 +1,8 @@
 # VLLM
 ### **On Node 1 (Master, node-rank=0):**
 ``` bash
+ray start --head --port=6379 --num-cpus=32 --num-gpus=2
+
 docker run --gpus all --network host --rm \
   -e NCCL_SOCKET_IFNAME=enp129s0f0np0,enp129s0f1np1 \
   -e NCCL_IB_DISABLE=0 \
@@ -11,21 +13,17 @@ docker run --gpus all --network host --rm \
   -e NCCL_DEBUG=INFO \
   -e NCCL_NET_GDR_LEVEL=5 \
   -v /models:/data \
-  vllm/vllm-openai:v0.3.3 \
-  serve \
+  vllm/vllm-openai:v0.8.5 \
   --model google/gemma-7b \
   --host 0.0.0.0 \
   --port 8000 \
-  --tensor-parallel-size 2 \
-  --ray-worker-use-node-ip=true \
+  --tensor-parallel-size 4 \
+  --deployment-mode ray \
   --ray-address="auto"
-
-
 ```
 ### **On Node 2 (Worker, node-rank=1):**
 ``` bash
-ray start --address='192.168.100.1:6379' --resources='{"GPU": 1}'
-
+ray start --address='192.168.100.1:6379' --num-cpus=32 --num-gpus=2
 ```
 
 # HF-TGI
