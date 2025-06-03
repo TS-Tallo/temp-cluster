@@ -12,38 +12,19 @@ docker run --gpus all --network host --rm \
   -e NCCL_NET_GDR_LEVEL=5 \
   -v /models:/data \
   vllm/vllm-openai:v0.3.3 \
+  serve \
   --model google/gemma-7b \
   --host 0.0.0.0 \
   --port 8000 \
-  --distributed \
   --tensor-parallel-size 2 \
-  --node-rank 0 \
-  --master-addr 192.168.100.1 \
-  --master-port 9000
+  --ray-worker-use-node-ip=true \
+  --ray-address="auto"
+
 
 ```
 ### **On Node 2 (Worker, node-rank=1):**
 ``` bash
-docker run --gpus all --network host --rm \
-  -e NCCL_SOCKET_IFNAME=enp129s0f0np0,enp129s0f1np1 \
-  -e NCCL_IB_DISABLE=0 \
-  -e NCCL_IB_GID_INDEX=3 \
-  -e NCCL_IB_HCA=mlx5_0,mlx5_1 \
-  -e NCCL_IB_TIMEOUT=23 \
-  -e NCCL_IB_RETRY_CNT=7 \
-  -e NCCL_DEBUG=INFO \
-  -e NCCL_NET_GDR_LEVEL=5 \
-  -v /models:/data \
-  vllm/vllm-openai:v0.3.3 \
-  --model google/gemma-7b \
-  --host 0.0.0.0 \
-  --port 8000 \
-  --distributed \
-  --tensor-parallel-size 2 \
-  --node-rank 1 \
-  --master-addr 192.168.100.1 \
-  --master-port 9000
-
+ray start --address='192.168.100.1:6379' --resources='{"GPU": 1}'
 
 ```
 
