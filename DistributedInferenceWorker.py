@@ -3,10 +3,16 @@ import ray
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 import logging
+import importlib.util
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("DistributedInference")
+
+# Check if flash_attn is installed
+has_flash_attn = importlib.util.find_spec("flash_attn") is not None
+if not has_flash_attn:
+    logger.warning("flash_attn is not installed. Falling back to standard attention implementation.")
 
 # Keep the original InferenceWorker class for local model loading
 class InferenceWorker:
@@ -54,17 +60,22 @@ class InferenceWorker:
             # Special handling for Gemma-3 models
             if "gemma-3" in model_name.lower():
                 # Set specific configuration options for Gemma-3
-                self.model = AutoModelForCausalLM.from_pretrained(
-                    model_name,
-                    torch_dtype=dtype,
-                    device_map=device_map,
-                    max_memory=max_memory,
-                    token=hf_token,
-                    trust_remote_code=True,
-                    revision="main",  # Use main branch
-                    low_cpu_mem_usage=True,
-                    attn_implementation="flash_attention_2" if torch.cuda.is_available() else "eager",
-                )
+                model_kwargs = {
+                    "torch_dtype": dtype,
+                    "device_map": device_map,
+                    "max_memory": max_memory,
+                    "token": hf_token,
+                    "trust_remote_code": True,
+                    "revision": "main",  # Use main branch
+                    "low_cpu_mem_usage": True,
+                }
+                
+                # Only add flash_attention_2 if it's installed and we're on GPU
+                if has_flash_attn and torch.cuda.is_available():
+                    model_kwargs["attn_implementation"] = "flash_attention_2"
+                    logger.info("Using flash_attention_2 for faster inference")
+                
+                self.model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
             else:
                 self.model = AutoModelForCausalLM.from_pretrained(
                     model_name,
@@ -164,7 +175,6 @@ class InferenceWorker:
 
 
 # Ray-compatible distributed worker implementation
-@ray.remote
 class DistributedInferenceWorker:
     """Ray-compatible wrapper for distributed inference."""
     
@@ -218,31 +228,6 @@ class DistributedInferenceWorker:
             return f"Error during distributed inference: {str(e)}"
 
 
-def create_workers(model_name: str, hf_token: str, num_workers: int, gpus_per_worker: int):
-    """Create and initialize distributed workers."""
-    logger.info(f"Creating {num_workers} workers with {gpus_per_worker} GPUs per worker")
-    
-    # Create the workers
-    workers = []
-    for i in range(num_workers):
-        worker = DistributedInferenceWorker.options(num_gpus=gpus_per_worker).remote(
-            model_name, hf_token, gpus_per_worker
-        )
-        workers.append(worker)
-        logger.info(f"Created worker {i+1}/{num_workers}")
-    
-    # Initialize the workers in parallel
-    logger.info("Initializing workers...")
-    init_results = ray.get([worker.initialize.remote() for worker in workers])
-    
-    # Check for initialization errors
-    for i, result in enumerate(init_results):
-        if result["status"] == "error":
-            logger.warning(f"Worker {i+1} initialization failed: {result['message']}")
-    
-    return workers
-
-
 def main():
     """Main entry point - sets up Ray and processes distributed prompts."""
     try:
@@ -278,34 +263,34 @@ def main():
         # Create the right number of workers based on available GPUs
         num_workers = max(1, n_gpus // gpus_per_worker) if n_gpus > 0 else 1
         
-        # Create and initialize workers
-        workers = create_workers(model_name, hf_token, num_workers, gpus_per_worker)
+        logger.info(f"Creating {num_workers} inference workers with {gpus_per_worker} GPUs per worker...")
+        
+        # Create Ray remote class with GPU requirements
+        RemoteWorker = ray.remote(num_gpus=gpus_per_worker)(DistributedInferenceWorker)
+        
+        # Create workers
+        workers = []
+        for i in range(num_workers):
+            worker = RemoteWorker.remote(model_name, hf_token, gpus_per_worker)
+            workers.append(worker)
+            logger.info(f"Created worker {i+1}/{num_workers}")
+        
+        # Initialize workers and check for errors
+        init_results = ray.get([worker.initialize.remote() for worker in workers])
+        for i, result in enumerate(init_results):
+            if result["status"] == "error":
+                logger.warning(f"Worker {i+1} initialization failed: {result['message']}")
         
         # Process prompts
         logger.info(f"Processing {len(prompts)} prompts...")
-        prompt_tasks = []
+        prompt_tasks = [
+            workers[i % num_workers].infer.remote(prompts[i], max_new_tokens=250, temperature=0.7)
+            for i in range(len(prompts))
+        ]
         
-        for i, prompt in enumerate(prompts):
-            worker_idx = i % len(workers)
-            task = workers[worker_idx].infer.remote(prompt, 250, 0.7)
-            prompt_tasks.append((i, prompt, task))
-        
-        # Process results
-        results = []
-        for i, prompt, task in prompt_tasks:
-            try:
-                response = ray.get(task)
-                results.append((i, prompt, response))
-                logger.info(f"Processed prompt {i+1}/{len(prompts)}")
-            except Exception as e:
-                error_msg = f"Error processing prompt {i+1}: {str(e)}"
-                logger.error(error_msg)
-                results.append((i, prompt, f"Error: {str(e)}"))
-        
-        # Sort results by original index and display
-        results.sort(key=lambda x: x[0])
-        for i, prompt, response in results:
-            print(f"\nPrompt {i+1}: {prompt}")
+        # Process results as they become available
+        for i, response in enumerate(ray.get(prompt_tasks)):
+            print(f"\nPrompt {i+1}: {prompts[i]}")
             print(f"Response: {response}")
             
     except Exception as e:
