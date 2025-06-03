@@ -3,9 +3,8 @@ import ray
 import torch
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-@ray.remote(num_gpus=1)
 class InferenceWorker:
-    """Ray Actor for distributed inference on HuggingFace CausalLM models."""
+    """Base class for distributed inference on HuggingFace CausalLM models."""
 
     def __init__(self, model_name: str, hf_token: str, gpus_per_worker: int = 1):
         """Initialize model and tokenizer for large models with model parallelism."""
@@ -45,7 +44,8 @@ class InferenceWorker:
             )
             print(f"Model {model_name} loaded successfully")
         except Exception as e:
-            ray.actor.exit_actor(f"Failed to initialize model: {str(e)}")
+            print(f"Failed to initialize model: {str(e)}")
+            raise
 
     def format_prompt(self, prompt: str) -> str:
         """Format the prompt based on model type."""
@@ -144,20 +144,13 @@ def main():
         
         print(f"Creating {num_workers} inference workers with {gpus_per_worker} GPUs per worker...")
         
-        # Create workers with the appropriate GPU configuration
-        if gpus_per_worker > 1:
-            # For multi-GPU models, create custom remote class with correct GPU count
-            CustomInferenceWorker = ray.remote(num_gpus=gpus_per_worker)(InferenceWorker._actor_for_actor_class)
-            workers = [
-                CustomInferenceWorker.remote(model_name, hf_token, gpus_per_worker)
-                for _ in range(num_workers)
-            ]
-        else:
-            # For single GPU models, use the base decorator
-            workers = [
-                InferenceWorker.remote(model_name, hf_token, gpus_per_worker)
-                for _ in range(num_workers)
-            ]
+        # Create the proper Ray actor class with the right GPU count
+        RemoteInferenceWorker = ray.remote(num_gpus=gpus_per_worker)(InferenceWorker)
+        
+        workers = [
+            RemoteInferenceWorker.remote(model_name, hf_token, gpus_per_worker)
+            for _ in range(num_workers)
+        ]
 
         # Dispatch prompts to workers cyclically
         print(f"Processing {len(prompts)} prompts...")
