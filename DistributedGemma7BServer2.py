@@ -63,22 +63,20 @@ def main():
     print("=== Starting DistributedGemma7BServer Actor ===")
     server = DistributedGemma7BServer.remote()
 
-    # Multiple prompts for test
     prompts = [
         "Q: What is the capital of Italy?\nA:",
-        "Q: Who wrote '1984'?\nA:",
+        "Q: Who wrote 'Pride and Prejudice'?\nA:",
         "Q: What is the largest planet in our solar system?\nA:",
         "Q: What year did the Apollo 11 moon landing occur?\nA:"
     ]
 
-    # Gather all results asynchronously
-    result_refs = [server.generate.remote(prompt) for prompt in prompts]
-    results = ray.get(result_refs)
-
-    print("=== Model Outputs ===")
-    for prompt, result in zip(prompts, results):
-        answer = extract_answer(result)
-        print(f"{prompt}\n{answer}\n")
+    for loop in range(1, 11):
+        print(f"\n=== Iteration {loop} ===")
+        result_refs = [server.generate.remote(prompt) for prompt in prompts]
+        results = ray.get(result_refs)
+        for prompt, result in zip(prompts, results):
+            answer = extract_answer(result)
+            print(f"{prompt}\n{answer}\n")
 
 if __name__ == "__main__":
     main()
