@@ -8,10 +8,7 @@ def inference_loop_per_worker(config):
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
 
-    # Explicitly set HF_TOKEN inside worker (from Ray's config)
-    hf_token = config.get("hf_token")
-    if not hf_token:
-        hf_token = os.environ.get("HF_TOKEN")
+    hf_token = config.get("hf_token") or os.environ.get("HF_TOKEN")
     if not hf_token:
         raise ValueError("HF_TOKEN must be provided in config or environment!")
 
@@ -31,7 +28,7 @@ def inference_loop_per_worker(config):
     with torch.no_grad():
         outputs = model.generate(**inputs, max_new_tokens=20)
     result = tokenizer.decode(outputs[0], skip_special_tokens=True)
-    print(f"Sample output: {result}")
+    # Return for Ray aggregation
     return {"output": result}
 
 if __name__ == "__main__":
@@ -52,5 +49,19 @@ if __name__ == "__main__":
         scaling_config=scaling_config
     )
 
-    results = trainer.fit()
-    print("All worker results:", results)
+    # Run and collect results (from all workers)
+    result = trainer.fit()
+    # Access per-worker return values
+    if hasattr(result, "metrics") and "output" in result.metrics:
+        # Single worker
+        outputs = [result.metrics["output"]]
+    elif hasattr(result, "metrics") and "output" not in result.metrics and "per_worker_metrics" in result.metrics:
+        # Multi-worker (older versions)
+        outputs = [m["output"] for m in result.metrics["per_worker_metrics"]]
+    else:
+        # Air 2.x: results are in result.metrics or result.metrics["output"] or result.metrics["outputs"]
+        outputs = result.metrics.get("outputs", None) or result.metrics.get("output", None)
+        if outputs is not None and not isinstance(outputs, list):
+            outputs = [outputs]
+
+    print("All worker outputs:", outputs)
